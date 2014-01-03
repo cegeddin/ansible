@@ -11,9 +11,10 @@ viewdocs: clean
 	./build-site.py view
 
 htmldocs:
-	 ./build-site.py rst
+	./build-site.py rst
 
 clean:
+	-rm -rf htmlout
 	-rm -f .buildinfo
 	-rm -f *.inv
 	-rm -rf *.doctrees
@@ -26,6 +27,6 @@ clean:
 .PHONEY: docs clean
 
 modules: $(FORMATTER) ../hacking/templates/rst.j2
-	$(FORMATTER) -t rst --template-dir=../hacking/templates --module-dir=../library -o rst/modules/ --includes-file=rst/modules/_list.rst
+	PYTHONPATH=../lib $(FORMATTER) -t rst --template-dir=../hacking/templates --module-dir=../library -o rst/
 
 

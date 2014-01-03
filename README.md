@@ -1,14 +1,16 @@
+[![PyPI version](https://badge.fury.io/py/ansible.png)](http://badge.fury.io/py/ansible)
+
 Ansible
 =======
 
 Ansible is a radically simple configuration-management, deployment, task-execution, and
 multinode orchestration framework.
 
-Read the documentation and more at http://ansible.cc
+Read the documentation and more at http://ansibleworks.com/
 
 Many users run straight from the development branch (it's generally fine to do so), but you might also wish to consume a release.  You can find 
-instructions on http://ansible.cc/docs/gettingstarted.html for a variety of platforms.  If you want a tarball of the last release, go to 
-http://ansible.cc/releases/ and you can also install with pip (though that will bring in some optional binary dependencies you normally do not need).
+instructions [here](http://ansibleworks.com/docs/intro_getting_started.html) for a variety of platforms.  If you want a tarball of the last release, go to 
+http://ansibleworks.com/releases/ and you can also install with pip.
 
 Design Principles
 =================
@@ -25,7 +27,9 @@ Design Principles
 Get Involved
 ============
 
-   * [ansible-project mailing list](http://groups.google.com/group/ansible-project)
+   * Read [Contributing.md](https://github.com/ansible/ansible/blob/devel/CONTRIBUTING.md) for all kinds of ways to contribute to and interact with the project, including mailing list information and how to submit bug reports and code to Ansible.  
+   * When submitting a bug report, include 1) the output of 'ansible --version', 2) what you expected to happen, 3) what actually happened, and 4) any relevant commands and output.
+   * All code submissions are done through pull requests.  Take care to make sure no merge commits are in the submission, and use "git rebase" vs "git merge" for this reason.  If submitting a large code change (other than modules), it's probably a good idea to join ansible-devel and talk about what you would like to do or add first and to avoid duplicate efforts.  This not only helps everyone know what's going on, it also helps save time and effort if we decide some changes are needed.
    * irc.freenode.net: #ansible
 
 Branch Info
@@ -39,8 +43,7 @@ Branch Info
 Author
 ======
 
-Michael DeHaan -- michael.dehaan@gmail.com
+Michael DeHaan -- michael@ansibleworks.com
 
-[http://michaeldehaan.net](http://michaeldehaan.net/)
-
+[AnsibleWorks](http://ansibleworks.com)
 

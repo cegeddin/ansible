@@ -18,7 +18,8 @@
 from ansible.callbacks import vv
 from ansible.errors import AnsibleError as ae
 from ansible.runner.return_data import ReturnData
-from ansible.utils import getch, template, parse_kv
+from ansible.utils import getch, parse_kv
+import ansible.utils.template as template
 from termios import tcflush, TCIFLUSH
 import datetime
 import sys
@@ -53,7 +54,11 @@ class ActionModule(object):
         # flag, it always runs
 
         hosts = ', '.join(self.runner.host_set)
-        args = parse_kv(template(self.runner.basedir, module_args, inject))
+        args = {}
+        if complex_args:
+            args.update(complex_args)
+        # extra template call unneeded?
+        args.update(parse_kv(template.template(self.runner.basedir, module_args, inject)))
 
         # Are 'minutes' or 'seconds' keys that exist in 'args'?
         if 'minutes' in args or 'seconds' in args:
@@ -96,7 +101,7 @@ class ActionModule(object):
                 # Clear out any unflushed buffered input which would
                 # otherwise be consumed by raw_input() prematurely.
                 tcflush(sys.stdin, TCIFLUSH)
-                raw_input(self.prompt)
+                self.result['user_input'] = raw_input(self.prompt)
         except KeyboardInterrupt:
             while True:
                 print '\nAction? (a)bort/(c)ontinue: '

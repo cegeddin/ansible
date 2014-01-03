@@ -20,14 +20,15 @@ import ansible
 from ansible.callbacks import vv
 from ansible.errors import AnsibleError as ae
 from ansible.runner.return_data import ReturnData
-from ansible.utils import parse_kv, template, check_conditional
+from ansible.utils import parse_kv, check_conditional
+import ansible.utils.template as template
 
 class ActionModule(object):
     ''' Create inventory groups based on variables '''
 
     ### We need to be able to modify the inventory
     BYPASS_HOST_LOOP = True
-    NEEDS_TMPPATH = False
+    TRANSFERS_FILES = False
 
     def __init__(self, runner):
         self.runner = runner
@@ -37,7 +38,10 @@ class ActionModule(object):
         # the group_by module does not need to pay attention to check mode.
         # it always runs.
 
-        args = parse_kv(self.runner.module_args)
+        args = {}
+        if complex_args:
+            args.update(complex_args)
+        args.update(parse_kv(self.runner.module_args))
         if not 'key' in args:
             raise ae("'key' is a required argument.")
 
@@ -49,11 +53,22 @@ class ActionModule(object):
 
         ### find all groups
         groups = {}
+
         for host in self.runner.host_set:
-            data = inject['hostvars'][host]
-            if not check_conditional(template(self.runner.basedir, self.runner.conditional, data)):
+            data = {}
+            data.update(inject)
+            data.update(inject['hostvars'][host])
+            conds = self.runner.conditional
+            if type(conds) != list:
+                conds = [ conds ]
+            next_host = False
+            for cond in conds:
+                if not check_conditional(cond, self.runner.basedir, data, fail_on_undefined=self.runner.error_on_undefined_vars):
+                    next_host = True
+                    break
+            if next_host:
                 continue
-            group_name = template(self.runner.basedir, args['key'], data)
+            group_name = template.template(self.runner.basedir, args['key'], data)
             group_name = group_name.replace(' ','-')
             if group_name not in groups:
                 groups[group_name] = []
@@ -68,6 +83,7 @@ class ActionModule(object):
                 inv_group = ansible.inventory.Group(name=group)
                 inventory.add_group(inv_group)
             for host in hosts:
+                del self.runner.inventory._vars_per_host[host]
                 inv_host = inventory.get_host(host)
                 if not inv_host:
                     inv_host = ansible.inventory.Host(name=host)

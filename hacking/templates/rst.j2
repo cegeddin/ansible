@@ -1,7 +1,22 @@
 .. _@{ module }@:
 
-@{ module }@
-``````````````````````````````
+{% if short_description %}
+{% set title = module + ' - ' + short_description|convert_symbols_to_format %}
+{% else %}
+{% set title = module %}
+{% endif %}
+{% set title_len = title|length %}
+
+@{ title }@
+@{ '+' * title_len }@
+
+{% if author %}
+:Author: @{ author }@
+{% endif %}
+
+.. contents::
+   :local:
+   :depth: 1
 
 {# ------------------------------------------
  #
@@ -10,18 +25,24 @@
  #
  --------------------------------------------#}
 
+Synopsis
+--------
+
 {% if version_added is defined -%}
 .. versionadded:: @{ version_added }@
 {% endif %}
 
 {% for desc in description -%}
-@{ desc | jpfunc }@ 
+@{ desc | convert_symbols_to_format }@
 {% endfor %}
 
 {% if options -%}
+Options
+-------
+
 .. raw:: html
 
-    <table>
+    <table border=1 cellpadding=4>
     <tr>
     <th class="head">parameter</th>
     <th class="head">required</th>
@@ -35,12 +56,28 @@
     <td>@{ k }@</td>
     <td>{% if v.get('required', False) %}yes{% else %}no{% endif %}</td>
     <td>{% if v['default'] %}@{ v['default'] }@{% endif %}</td>
+    {% if v.get('type', 'not_bool') == 'bool' %}
+    <td><ul><li>yes</li><li>no</li></ul></td>
+    {% else %}
     <td><ul>{% for choice in v.get('choices',[]) -%}<li>@{ choice }@</li>{% endfor -%}</ul></td>
+    {% endif %}
     <td>{% for desc in v.description -%}@{ desc | html_ify }@{% endfor -%}{% if v['version_added'] %} (added in Ansible @{v['version_added']}@){% endif %}</td>
     </tr>
     {% endfor %}
     </table>
 {% endif %}
+
+{% if requirements %}
+{% for req in requirements %}
+
+.. note:: Requires @{ req | convert_symbols_to_format }@
+
+{% endfor %}
+{% endif %}
+
+{% if examples or plainexamples %}
+Examples
+--------
 
 .. raw:: html
 
@@ -55,19 +92,16 @@
     <br/>
 
 {% if plainexamples %}
-.. raw:: html
 
-    <pre>
-@{ plainexamples | escape | indent(4, True) }@
-    </pre>
+::
+
+@{ plainexamples | indent(4, True) }@
+{% endif %}
 {% endif %}
 
 {% if notes %}
-.. raw:: html
-
-    <h4>Notes</h4>
-    {% for note in notes %}
-    <p>@{ note | html_ify }@</p>
-    {% endfor %}
+{% for note in notes %}
+.. note:: @{ note | convert_symbols_to_format }@
+{% endfor %}
 {% endif %}
 
