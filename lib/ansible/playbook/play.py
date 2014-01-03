@@ -1,4 +1,4 @@
-# (c) 2012, Michael DeHaan <michael.dehaan@gmail.com>
+# (c) 2012-2013, Michael DeHaan <michael.dehaan@gmail.com>
 #
 # This file is part of Ansible
 #
@@ -75,10 +75,8 @@ class Play(object):
         self.transport    = ds.get('connection', self.playbook.transport)
         self.tags         = ds.get('tags', None)
         self.gather_facts = ds.get('gather_facts', None)
-        self.serial       = int(utils.template_ds(basedir, ds.get('serial', 0), self.vars))
-
-        if isinstance(self.remote_port, basestring):
-            self.remote_port = utils.template(basedir, self.remote_port, self.vars)
+        self.serial       = int(utils.template(basedir, ds.get('serial', 0), self.vars))
+        self.remote_port  = utils.template(basedir, self.remote_port, self.vars)
 
         self._update_vars_files_for_host(None)
 
@@ -117,7 +115,7 @@ class Play(object):
                         plugin_name = k[5:]
                         if plugin_name not in utils.plugins.lookup_loader:
                             raise errors.AnsibleError("cannot find lookup plugin named %s for usage in with_%s" % (plugin_name, plugin_name))
-                        terms = utils.template_ds(self.basedir, x[k], task_vars)
+                        terms = utils.template(self.basedir, x[k], task_vars)
                         items = utils.plugins.lookup_loader.get(plugin_name, basedir=self.basedir, runner=None).run(terms, inject=task_vars)
                     elif k.startswith("when_"):
                         included_additional_conditions.append(utils.compile_when_to_only_if("%s %s" % (k[5:], x[k])))
@@ -136,7 +134,7 @@ class Play(object):
                     mv['item'] = item
                     for t in tokens[1:]:
                         (k,v) = t.split("=", 1)
-                        mv[k] = utils.template_ds(self.basedir, v, mv)
+                        mv[k] = utils.template(self.basedir, v, mv)
                     include_file = utils.template(self.basedir, tokens[0], mv)
                     data = utils.parse_yaml_from_file(utils.path_dwim(self.basedir, include_file))
                     results += self._load_tasks(data, mv, included_additional_conditions)
@@ -186,9 +184,6 @@ class Play(object):
         else:
             vars.update(self.vars)
 
-        if type(self.playbook.extra_vars) == dict:
-            vars.update(self.playbook.extra_vars)
-
         if type(self.vars_prompt) == list:
             for var in self.vars_prompt:
                 if not 'name' in var:
@@ -205,7 +200,7 @@ class Play(object):
                 salt = var.get("salt", None)
 
                 if vname not in self.playbook.extra_vars:
-                    vars[vname] = self.playbook.callbacks.on_vars_prompt (
+                    vars[vname] = self.playbook.callbacks.on_vars_prompt(
                                      vname, private, prompt, encrypt, confirm, salt_size, salt, default
                                   )
 
@@ -220,9 +215,10 @@ class Play(object):
         else:
             raise errors.AnsibleError("'vars_prompt' section is malformed, see docs")
 
-        results = self.playbook.extra_vars.copy()
-        results.update(vars)
-        return results
+        if type(self.playbook.extra_vars) == dict:
+            vars.update(self.playbook.extra_vars)
+
+        return vars
 
     # *************************************************
 
@@ -328,6 +324,7 @@ class Play(object):
                         # running a host specific pass and has host specific variables
                         # load into setup cache
                         self.playbook.SETUP_CACHE[host].update(new_vars)
+                        self.playbook.callbacks.on_import_for_host(host, filename4)
                     elif host is None:
                         # running a non-host specific pass and we can update the global vars instead
                         self.vars.update(new_vars)

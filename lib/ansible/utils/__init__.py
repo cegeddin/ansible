@@ -34,6 +34,8 @@ import termios
 import tty
 import pipes
 import random
+import difflib
+import warnings
 
 VERBOSITY=0
 
@@ -117,6 +119,8 @@ def exit(msg, rc=1):
 def jsonify(result, format=False):
     ''' format JSON output (uncompressed or uncompressed) '''
 
+    if result is None:
+        return {}
     result2 = result.copy()
     if format:
         return json.dumps(result2, sort_keys=True, indent=4)
@@ -145,6 +149,9 @@ def is_changed(result):
 
 def check_conditional(conditional):
 
+    if not isinstance(conditional, basestring):
+        return conditional
+
     def is_set(var):
         return not var.startswith("$")
 
@@ -153,7 +160,7 @@ def check_conditional(conditional):
 
     try:
         return eval(conditional.replace("\n", "\\n"))
-    except SyntaxError as e:
+    except (NameError, SyntaxError):
         raise errors.AnsibleError("Could not evaluate the expression: " + conditional)
 
 def is_executable(path):
@@ -182,7 +189,7 @@ def path_dwim(basedir, given):
 
     if given.startswith("/"):
         return given
-    elif given.startswith("~/"):
+    elif given.startswith("~"):
         return os.path.expanduser(given)
     else:
         return os.path.join(basedir, given)
@@ -230,7 +237,32 @@ def parse_json(raw_data):
 
 def parse_yaml(data):
     ''' convert a yaml string to a data structure '''
-    return yaml.load(data)
+    return yaml.safe_load(data)
+
+def process_yaml_error(exc, data, path=None):
+    if hasattr(exc, 'problem_mark'):
+        mark = exc.problem_mark
+        if mark.line -1 >= 0:
+            before_probline = data.split("\n")[mark.line-1]
+        else:
+            before_probline = ''
+        probline = data.split("\n")[mark.line]
+        arrow = " " * mark.column + "^"
+        msg = """Syntax Error while loading YAML script, %s
+Note: The error may actually appear before this position: line %s, column %s
+
+%s
+%s
+%s""" % (path, mark.line + 1, mark.column + 1, before_probline, probline, arrow)
+    else:
+        # No problem markers means we have to throw a generic
+        # "stuff messed up" type message. Sry bud.
+        if path:
+            msg = "Could not parse YAML. Check over %s again." % path
+        else:
+            msg = "Could not parse YAML."
+    raise errors.AnsibleYAMLValidationFailed(msg)
+
 
 def parse_yaml_from_file(path):
     ''' convert a yaml file to a data structure '''
@@ -241,25 +273,7 @@ def parse_yaml_from_file(path):
     except IOError:
         raise errors.AnsibleError("file not found: %s" % path)
     except yaml.YAMLError, exc:
-        if hasattr(exc, 'problem_mark'):
-            mark = exc.problem_mark
-            if mark.line -1 >= 0:
-                before_probline = data.split("\n")[mark.line-1]
-            else:
-                before_probline = ''
-            probline = data.split("\n")[mark.line]
-            arrow = " " * mark.column + "^"
-            msg = """Syntax Error while loading YAML script, %s
-Note: The error may actually appear before this position: line %s, column %s
-
-%s
-%s
-%s""" % (path, mark.line + 1, mark.column + 1, before_probline, probline, arrow)
-        else:
-            # No problem markers means we have to throw a generic
-            # "stuff messed up" type message. Sry bud.
-            msg = "Could not parse YAML. Check over %s again." % path
-        raise errors.AnsibleYAMLValidationFailed(msg)
+        process_yaml_error(exc, data, path)
 
 def parse_kv(args):
     ''' convert a string of key/value items to a dict '''
@@ -298,7 +312,7 @@ def md5s(data):
     ''' Return MD5 hex digest of data. '''
 
     digest = _md5()
-    digest.update(data)
+    digest.update(data.encode('utf-8'))
     return digest.hexdigest()
 
 def md5(filename):
@@ -331,7 +345,7 @@ def _gitinfo():
         # Check if the .git is a file. If it is a file, it means that we are in a submodule structure.
         if os.path.isfile(repo_path):
             try:
-                gitdir = yaml.load(open(repo_path)).get('gitdir')
+                gitdir = yaml.safe_load(open(repo_path)).get('gitdir')
                 # There is a posibility the .git file to have an absolute path.
                 if os.path.isabs(gitdir):
                     repo_path = gitdir
@@ -392,7 +406,7 @@ def increment_debug(option, opt, value, parser):
     VERBOSITY += 1
 
 def base_parser(constants=C, usage="", output_opts=False, runas_opts=False,
-    async_opts=False, connect_opts=False, subset_opts=False):
+    async_opts=False, connect_opts=False, subset_opts=False, check_opts=False, diff_opts=False):
     ''' create an options parser for any ansible script '''
 
     parser = SortedOptParser(usage, version=version("%prog"))
@@ -448,6 +462,17 @@ def base_parser(constants=C, usage="", output_opts=False, runas_opts=False,
             help="set the poll interval if using -B (default=%s)" % constants.DEFAULT_POLL_INTERVAL)
         parser.add_option('-B', '--background', dest='seconds', type='int', default=0,
             help='run asynchronously, failing after X seconds (default=N/A)')
+
+    if check_opts:
+        parser.add_option("-C", "--check", default=False, dest='check', action='store_true',
+            help="don't make any changes, instead try to predict some of the changes that may occur"
+        )
+
+    if diff_opts:
+        parser.add_option("-D", "--diff", default=False, dest='diff', action='store_true',
+            help="when changing (small) files and templates, show the differences in those files, works great with --check"
+        )
+
 
     return parser
 
@@ -594,3 +619,17 @@ def make_sudo_cmd(sudo_user, executable, cmd):
         C.DEFAULT_SUDO_EXE, C.DEFAULT_SUDO_EXE, C.DEFAULT_SUDO_FLAGS,
         prompt, sudo_user, executable or '$SHELL', pipes.quote(cmd))
     return ('/bin/sh -c ' + pipes.quote(sudocmd), prompt)
+
+def get_diff(before, after):
+    # called by --diff usage in playbook and runner via callbacks
+    # include names in diffs 'before' and 'after' and do diff -U 10
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            differ = difflib.unified_diff(before.splitlines(True), after.splitlines(True), 'before', 'after', '', '', 10)
+            return "".join(list(differ))
+    except UnicodeDecodeError:
+        return ">> the files are different, but the diff library cannot compare unicode strings"
+
+ 

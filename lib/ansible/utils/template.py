@@ -33,7 +33,7 @@ import pwd
 _LISTRE = re.compile(r"(\w+)\[(\d+)\]")
 JINJA2_OVERRIDE='#jinja2:'
 
-def _varFindLimitSpace(basedir, vars, space, part, lookup_fatal, depth):
+def _varFindLimitSpace(basedir, vars, space, part, lookup_fatal, depth, expand_lists):
     ''' limits the search space of space to part
     
     basically does space.get(part, None), but with
@@ -47,7 +47,7 @@ def _varFindLimitSpace(basedir, vars, space, part, lookup_fatal, depth):
     if part[0] == '{' and part[-1] == '}':
         part = part[1:-1]
     # Template part to resolve variables within (${var$var2})
-    part = varReplace(basedir, part, vars, lookup_fatal, depth=depth + 1)
+    part = varReplace(basedir, part, vars, lookup_fatal=lookup_fatal, depth=depth + 1, expand_lists=expand_lists)
 
     # Now find it
     if part in space:
@@ -66,11 +66,11 @@ def _varFindLimitSpace(basedir, vars, space, part, lookup_fatal, depth):
 
     # if space is a string, check if it's a reference to another variable
     if isinstance(space, basestring):
-        space = template_ds(basedir, space, vars, lookup_fatal, depth)
+        space = template(basedir, space, vars, lookup_fatal=lookup_fatal, depth=depth + 1, expand_lists=expand_lists)
 
     return space
 
-def _varFind(basedir, text, vars, lookup_fatal, depth=0):
+def _varFind(basedir, text, vars, lookup_fatal, depth, expand_lists):
     ''' Searches for a variable in text and finds its replacement in vars
 
     The variables can have two formats;
@@ -110,14 +110,18 @@ def _varFind(basedir, text, vars, lookup_fatal, depth=0):
     else:
         is_complex = False
         brace_level = 1
+
     # is_lookup is true for $FILE(...) and friends
     is_lookup = False
     lookup_plugin_name = None
     end = var_start
+
     # part_start is an index of where the current part started
     part_start = var_start
     space = vars
+
     while end < len(text) and (((is_lookup or is_complex) and brace_level > 0) or (not is_complex and not is_lookup)):
+
         if text[end].isalnum() or text[end] == '_':
             pass
         elif not is_complex and not is_lookup and text[end] == '(' and text[part_start:end].isupper():
@@ -135,17 +139,19 @@ def _varFind(basedir, text, vars, lookup_fatal, depth=0):
             brace_level += 1
         elif is_complex and text[end] == '}':
             brace_level -= 1
-        elif is_complex and text[end] in ('$', '[', ']'):
+        elif is_complex and text[end] in ('$', '[', ']', '-'):
             pass
         elif is_complex and text[end] == '.':
             if brace_level == 1:
-                space = _varFindLimitSpace(basedir, vars, space, text[part_start:end], lookup_fatal, depth)
+                space = _varFindLimitSpace(basedir, vars, space, text[part_start:end], lookup_fatal, depth, expand_lists)
                 part_start = end + 1
         else:
             # This breaks out of the loop on non-variable name characters
             break
         end += 1
+
     var_end = end
+
     # Handle "This has $ in it"
     if var_end == part_start:
         return {'replacement': None, 'start': start, 'end': end}
@@ -156,13 +162,13 @@ def _varFind(basedir, text, vars, lookup_fatal, depth=0):
         if basedir is None:
             return {'replacement': None, 'start': start, 'end': end}
         var_end -= 1
-    	from ansible import utils
+        from ansible import utils
         args = text[part_start:var_end]
         if lookup_plugin_name == 'LOOKUP':
             lookup_plugin_name, args = args.split(",", 1)
             args = args.strip()
         # args have to be templated
-        args = varReplace(basedir, args, vars, depth=depth+1, expand_lists=True)
+        args = varReplace(basedir, args, vars, lookup_fatal, depth + 1, True)
         instance = utils.plugins.lookup_loader.get(lookup_plugin_name.lower(), basedir=basedir)
         if instance is not None:
             try:
@@ -180,12 +186,15 @@ def _varFind(basedir, text, vars, lookup_fatal, depth=0):
         var_end -= 1
         if text[var_end] != '}' or brace_level != 0:
             return None
-    space = _varFindLimitSpace(basedir, vars, space, text[part_start:var_end], lookup_fatal, depth)
+    space = _varFindLimitSpace(basedir, vars, space, text[part_start:var_end], lookup_fatal, depth, expand_lists)
     return {'replacement': space, 'start': start, 'end': end}
 
 def varReplace(basedir, raw, vars, lookup_fatal=True, depth=0, expand_lists=False):
     ''' Perform variable replacement of $variables in string raw using vars dictionary '''
     # this code originally from yum
+
+    if not isinstance(raw, unicode):
+        raw = raw.decode("utf-8")
 
     if (depth > 20):
         raise errors.AnsibleError("template recursion depth exceeded")
@@ -193,7 +202,7 @@ def varReplace(basedir, raw, vars, lookup_fatal=True, depth=0, expand_lists=Fals
     done = [] # Completed chunks to return
 
     while raw:
-        m = _varFind(basedir, raw, vars, lookup_fatal, depth)
+        m = _varFind(basedir, raw, vars, lookup_fatal, depth, expand_lists)
         if not m:
             done.append(raw)
             break
@@ -216,39 +225,29 @@ def varReplace(basedir, raw, vars, lookup_fatal=True, depth=0, expand_lists=Fals
 
     return ''.join(done)
 
-def template_ds(basedir, varname, vars, lookup_fatal=True, depth=0):
+def template(basedir, varname, vars, lookup_fatal=True, depth=0, expand_lists=True):
     ''' templates a data structure by traversing it and substituting for other data structures '''
 
     if isinstance(varname, basestring):
-        m = _varFind(basedir, varname, vars, lookup_fatal, depth)
+        m = _varFind(basedir, varname, vars, lookup_fatal, depth, expand_lists)
         if not m:
             return varname
         if m['start'] == 0 and m['end'] == len(varname):
             if m['replacement'] is not None:
-                return template_ds(basedir, m['replacement'], vars, lookup_fatal, depth)
+                return template(basedir, m['replacement'], vars, lookup_fatal, depth, expand_lists)
             else:
                 return varname
         else:
-            return template(basedir, varname, vars, lookup_fatal)
+            return varReplace(basedir, varname, vars, lookup_fatal, depth, expand_lists)
     elif isinstance(varname, (list, tuple)):
-        return [template_ds(basedir, v, vars, lookup_fatal, depth) for v in varname]
+        return [template(basedir, v, vars, lookup_fatal, depth, expand_lists) for v in varname]
     elif isinstance(varname, dict):
         d = {}
         for (k, v) in varname.iteritems():
-            d[k] = template_ds(basedir, v, vars, lookup_fatal, depth)
+            d[k] = template(basedir, v, vars, lookup_fatal, depth, expand_lists)
         return d
     else:
         return varname
-
-def template(basedir, text, vars, lookup_fatal=True, expand_lists=False):
-    ''' run a text buffer through the templating engine until it no longer changes '''
-
-    try:
-        text = text.decode('utf-8')
-    except UnicodeEncodeError:
-        pass # already unicode
-    text = varReplace(basedir, unicode(text), vars, lookup_fatal=lookup_fatal, expand_lists=expand_lists)
-    return text
 
 class _jinja2_vars(object):
     '''
@@ -260,11 +259,13 @@ class _jinja2_vars(object):
     here.
     extras is a list of locals to also search for variables. 
     '''
+
     def __init__(self, basedir, vars, globals, *extras):
         self.basedir = basedir
         self.vars = vars
         self.globals = globals
         self.extras = extras
+
     def __contains__(self, k):
         if k in self.vars:
             return True
@@ -274,6 +275,7 @@ class _jinja2_vars(object):
         if k in self.globals:
             return True
         return False
+
     def __getitem__(self, varname):
         if varname not in self.vars:
             for i in self.extras:
@@ -288,7 +290,8 @@ class _jinja2_vars(object):
         if isinstance(var, dict) and type(var) != dict:
             return var
         else:
-            return template_ds(self.basedir, var, self.vars)
+            return template(self.basedir, var, self.vars)
+
     def add_locals(self, locals):
         '''
         If locals are provided, create a copy of self containing those
@@ -314,7 +317,20 @@ def template_from_file(basedir, path, vars):
     from ansible import utils
     realpath = utils.path_dwim(basedir, path)
     loader=jinja2.FileSystemLoader([basedir,os.path.dirname(realpath)])
-    environment = jinja2.Environment(loader=loader, trim_blocks=True)
+
+    '''
+    if some extensions are set via jinja_extensions in ansible.cfg, we try
+    to load them with the jinja environment
+    '''
+    jinja_exts = []
+    if C.DEFAULT_JINJA2_EXTENSIONS:
+        '''
+        Let's make sure the configuration directive doesn't contain spaces
+        and split extensions in an array
+        '''
+        jinja_exts = C.DEFAULT_JINJA2_EXTENSIONS.replace(" ", "").split(',')
+
+    environment = jinja2.Environment(loader=loader, trim_blocks=True, extensions=jinja_exts)
     for filter_plugin in utils.plugins.filter_loader.all():
         filters = filter_plugin.filters()
         if not isinstance(filters, dict):

@@ -88,22 +88,28 @@ that is preferred::
 
     {{ ansible_eth0["ipv4"]["address"] }}
 
-Accessing Information About Other Hosts
-```````````````````````````````````````
+Magic Variables, and How To Access Information About Other Hosts
+````````````````````````````````````````````````````````````````
 
-If your database server wants to check the value of a 'fact' from another node, or an inventory variable
+Even if you didn't define them yourself, ansible provides a few variables for you, automatically.
+The most important of these are 'hostvars', 'group_names', and 'groups'.
+
+Hostvars lets you ask about the variables of another host, including facts that have been gathered
+about that host.  If you haven't yet talked to that host in any play yet at this point in the playbook
+or set of playbooks, you can get at the variables, but you will not be able o see the facts.
+
+If your database server wants to use the value of a 'fact' from another node, or an inventory variable
 assigned to another node, it's easy to do so within a template or even an action line::
 
     ${hostvars.hostname.factname}
 
-.. note::
-   No database or other complex system is required to exchange data
-   between hosts.  The hosts that you want to reference data from must
-   be included in either the current play or any previous play if you
-   are using a version prior to 0.8.  If you are using 0.8, and you have
-   not yet contacted the host, you'll be able to read inventory variables
-   but not fact variables.  Speak to the host by including it in a play
-   to make fact information available.
+Note in playbooks if your hostname contains a dash or periods in it, escape it like so::
+
+    ${hostvars.{test.example.com}.ansible_distribution}
+
+In Jinja2 templates, this can also be expressed as::
+
+    {{ hostvars['test.example.com']['ansible_distribution'] }}
 
 Additionally, *group_names* is a list (array) of all the groups the current host is in.  This can be used in templates using Jinja2 syntax to make template source files that vary based on the group membership (or role) of the host::
 
@@ -118,12 +124,20 @@ For example::
       # something that applies to all app servers.
    {% endfor %}
 
-Use cases include pointing a frontend proxy server to all of the app servers, setting up the correct firewall rules between servers, etc.
+A frequently used idiom is walking a group to find all IP addresses in that group::
 
-*inventory_hostname* is the name of the hostname as configured in Ansible's inventory host file.  This can
+   {% for host in groups['app_servers'] %}
+      {{ hostvars[host]['ansible_eth0']['ipv4']['address'] }}
+   {% endfor %}
+
+An example of this could include pointing a frontend proxy server to all of the app servers, setting up the correct firewall rules between servers, etc.
+
+Just a few other 'magic' variables are available...  There aren't many.
+
+Additionally, *inventory_hostname* is the name of the hostname as configured in Ansible's inventory host file.  This can
 be useful for when you don't want to rely on the discovered hostname `ansible_hostname` or for other mysterious
-reasons.  If you have a long FQDN, *inventory_hostname_short* (in Ansible 0.6) also contains the part up to the first
-period.
+reasons.  If you have a long FQDN, *inventory_hostname_short* also contains the part up to the first
+period, without the rest of the domain.
 
 Don't worry about any of this unless you think you need it.  You'll know when you do.
 
@@ -276,20 +290,22 @@ In Ansible 0.8, a few shortcuts are available for testing whether a variable is 
 
 There is a matching 'is_unset' that works the same way.  Quoting the variable inside the function is mandatory.
 
-When combining `only_if` with `with_items`, be aware that the `only_if` statement is processed for each item.
-This is a deliberate design::
+When combining `only_if` with `with_items`, be aware that the `only_if` statement is processed seperately for each item.
+This is by design::
 
     tasks:
         - action: command echo $item
           with_item: [ 0, 2, 4, 6, 8, 10 ]
           only_if: "$item > 5"
 
-While `only_if` is a pretty good option for advanced users, it exposes more guts of the engine than we'd like, and
-we can do better.  In 0.9, we will be adding `when`, which will be like a syntactic sugar for `only_if` and hide
-this level of complexity -- it will numerous built in operators.
+While `only_if` is a pretty good option for advanced users, it exposes more guts than we'd like, and
+we can do better.  In 1.0, we added 'when', which is like syntactic sugar for `only_if` and hides
+this level of complexity.  See more on this below.
 
 Conditional Execution (Simplified)
 ``````````````````````````````````
+
+.. versionadded: 0.8
 
 In Ansible 0.9, we realized that only_if was a bit syntactically complicated, and exposed too much Python
 to the user.  As a result, the 'when' set of keywords was added.  The 'when' statements do not have
@@ -329,7 +345,9 @@ Here are various examples of 'when' in use.  'when' is incompatible with 'only_i
 The when_boolean check will look for variables that look to be true as well, such as the string 'True' or
 'true', non-zero numbers, and so on.
 
-We also added when_changed and when_failed so users can execute tasks based on the status of previously
+.. versionadded: 1.0
+
+In 1.0, we also added when_changed and when_failed so users can execute tasks based on the status of previously
 registered tasks.  As an example::
 
     - name: "register a task that might fail"
@@ -348,6 +366,13 @@ registered tasks.  As an example::
     - name: "do this if the registered task changed"
       action: shell /bin/true
       when_changed: $result
+
+Note that if you have several tasks that all share the same conditional statement, you can affix the conditional
+to a task include statement as below.  Note this does not work with playbook includes, just task includes.  All the tasks
+get evaluated, but the conditional is applied to each and every task::
+
+    - include: tasks/sometasks.yml
+      when_string: 'reticulating splines' in $output
 
 Conditional Imports
 ```````````````````
@@ -429,14 +454,14 @@ If you have a list of hashes, you can reference subkeys using things like::
 
     ${item.subKeyName}
 
-More Loops
-``````````
+Lookup Plugins - Accessing Outside Data
+```````````````````````````````````````
 
 .. versionadded: 0.8
 
 Various 'lookup plugins' allow additional ways to iterate over data.  Ansible will have more of these
-over time.  In 0.8, the only lookup plugins that comes stock are 'with_fileglob' and 'with_sequence', but
-you can also write your own.
+over time.  You can write your own, as is covered in the API section.  Each typically takes a list and
+can accept more than one parameter.
 
 'with_fileglob' matches all files in a single directory, non-recursively, that match a pattern.  It can
 be used like this::
@@ -451,26 +476,83 @@ be used like this::
 
         # copy each file over that matches the given pattern
         - action: copy src=$item dest=/etc/fooapp/ owner=root mode=600
-          with_fileglob: /playbooks/files/fooapp/*
+          with_fileglob:
+            - /playbooks/files/fooapp/*
+
+'with_file' loads data in from a file directly::
+
+        - action: authorized_key user=foo key=$item
+          with_file:
+             - /home/foo/.ssh/id_rsa.pub
+
+As an alternative, lookup plugins can also be accessed in variables like so::
+
+        vars:
+            motd_value: $FILE(/etc/motd)
+            hosts_value: $LOOKUP(file,/etc/hosts)
+
+.. versionadded: 0.9
+
+Many new lookup abilities were added in 0.9.  Remeber lookup plugins are run on the "controlling" machine::
+
+    ---
+    - hosts: all
+
+      tasks:
+
+         - action: debug msg="$item is an environment variable"
+           with_env:
+             - HOME
+             - LANG
+
+         - action: debug msg="$item is a line from the result of this command"
+           with_lines:
+             - cat /etc/motd
+
+         - action: debug msg="$item is the raw result of running this command"
+           with_pipe:
+              - date
+
+         - action: debug msg="$item is value in Redis for somekey"
+           with_redis_kv:
+             - redis://localhost:6379,somekey
+
+         - action: debug msg="$item is a DNS TXT record for example.com"
+           with_dnstxt:
+             - example.com
+
+         - action: debug msg="$item is a value from evaluation of this template"
+           with_template:
+              - ./some_template.j2
+
+You can also assign these to variables, should you wish to do this instead, that will be evaluated
+when they are used in a task (or template)::
+
+    vars:
+        redis_value: $LOOKUP(redis,redis://localhost:6379,info_${inventory_hostname})
+        auth_key_value: $FILE(/home/mdehaan/.ssh/id_rsa.pub)
+
+    tasks:
+        - debug: msg=Redis value for host is $redis_value
 
 .. versionadded: 1.0
 
 'with_sequence' generates a sequence of items in ascending numerical order. You
-can specify a 'start', an 'end' value (inclusive), and a 'stride' value (to skip
-some numbers of values), and a printf-style 'format' string.  It accepts
-arguments both as key-value pairs and in a shortcut of the form
-"[start-]end[/stride][:format]".  All numerical values can be specified in
-hexadecimal (i.e. 0x3f8) or octal (i.e. 0644).  Negative numbers are not
-supported.  Here is an example that leverages most of its features::
+can specify a start, end, and an optional step value.
 
-    ----
+Arguments can be either key-value pairs or as a shortcut in the format
+"[start-]end[/stride][:format]".  The format is a printf style string.
+
+Numerical values can be specified in decimal, hexadecimal (0x3f8) or octal (0600).
+Negative numbers are not supported.  This works as follows::
+
+    ---
     - hosts: all
 
       tasks:
 
         # create groups
         - group: name=evens state=present
-
         - group: name=odds state=present
 
         # create 32 test users
@@ -484,25 +566,60 @@ supported.  Here is an example that leverages most of its features::
         - file: dest=/var/stuff/$item state=directory
           with_sequence: start=4 end=16
 
-The key-value form also supports a 'count' option, which always generates
-'count' entries regardless of the stride. The count option is mostly useful for
-avoiding off-by-one errors and errors calculating the number of entries in a
-sequence when a stride is specified.  The shortcut form cannot be used to
-specify a count.  As an example::
-
-    ----
-    - hosts: all
-
-      tasks:
-
+        # a simpler way to use the sequence plugin
         # create 4 groups
         - group: name=group${item} state=present
           with_sequence: count=4
 
+Setting the Environment (and Working With Proxies)
+``````````````````````````````````````````````````
+
+.. versionadded: 1.1
+
+It is quite possible that you may need to get package updates through a proxy, or even get some package
+updates through a proxy and access other packages not through a proxy.  Ansible makes it easy for you
+to configure your environment by using the 'environment' keyword.  Here is an example::
+
+    - hosts: all
+      user: root
+
+      tasks:
+
+        - apt: name=cobbler state=installed
+          environment:
+            http_proxy: http://proxy.example.com:8080
+
+The environment can also be stored in a variable, and accessed like so::
+
+    - hosts: all
+      user: root
+
+      # here we make a variable named "env" that is a dictionary
+      vars:
+        proxy_env:
+          http_proxy=http://proxy.example.com:8080
+
+      tasks:
+
+        - apt: name=cobbler state=installed
+          environment: $proxy_env
+
+While just proxy settings were shown above, any number of settings can be supplied.  The most logical place
+to define an environment hash might be a group_vars file, like so::
+
+    ----
+    # file: group_vars/boston
+
+    ntp_server: ntp.bos.example.com
+    backup: bak.bos.example.com
+    proxy_env:
+      http_proxy=http://proxy.bos.example.com:8080
+      https_proxy=http://proxy.bos.example.com:8080
+
 Getting values from files
 `````````````````````````
 
-.. versionadded: 0.8
+.. versionadded:: 0.8
 
 Sometimes you'll want to include the content of a file directly into a playbook.  You can do so using a macro.
 This syntax will remain in future versions, though we will also will provide ways to do this via lookup plugins (see "More Loops") as well.  What follows
@@ -517,6 +634,10 @@ is an example using the authorized_key module, which requires the actual text of
              - snowball
 
 The "$PIPE" macro works just like file, except you would feed it a command string instead.  It executes locally, not remotely, as does $FILE.
+
+Because Ansible uses lazy evaluation, a "$PIPE" macro will be executed each time it is used. For
+example, it will be executed separately for each host, and if it is used in a variable definition,
+it will be executed each time the variable is evaluated.
 
 Selecting Files And Templates Based On Variables
 ````````````````````````````````````````````````
@@ -773,22 +894,152 @@ Understanding Variable Precedence
 You have already learned about inventory host and group variables, 'vars', and 'vars_files'.
 
 If a variable name is defined in more than one place with the same name, priority is as follows
-to determine which place sets the value of the variable.
+to determine which place sets the value of the variable.  Lower numbered items have the highest
+priority.
 
-1.  Variables loaded from YAML files mentioned in 'vars_files' in a playbook.
+1.  Any variables specified with --extra-vars (-e) on the ansible-playbook command line.
 
-2.  facts, whether built in or custom, or variables assigned from the 'register' keyword.
+2.  Variables loaded from YAML files mentioned in 'vars_files' in a playbook.
 
-3.  variables passed to parameterized task include statements.
+3.  facts, whether built in or custom, or variables assigned from the 'register' keyword.
 
-4.  'vars' as defined in the playbook.
+4.  variables passed to parameterized task include statements.
 
-5.  Host variables from inventory.
+5.  'vars' as defined in the playbook.
 
-6.  Group variables from inventory, in order of least specific group to most specific.
+6.  Host variables from inventory.
+
+7.  Group variables from inventory in inheritance order.  This means if a group includes a sub-group, the variables
+in the subgroup have higher precedence.
 
 Therefore, if you want to set a default value for something you wish to override somewhere else, the best
-place to set such a default is in a group variable.
+place to set such a default is in a group variable.  The 'group_vars/all' file makes an excellent place to put global
+variables that are true across your entire site, since everything has higher priority than these values.
+
+
+Check Mode ("Dry Run") --check
+```````````````````````````````
+
+.. versionadded:: 1.1
+
+When ansible-playbook is executed with --check it will not make any changes on remote systems.  Instead, any module
+instrumented to support 'check mode' (which contains the primary core modules, but it is not required that all modules do
+this) will report what changes they would have made.  Other modules that do not support check mode will also take no
+action, but just will not report what changes they might have made.
+
+Check mode is just a simulation, and if you have steps that use conditionals that depend on the results of prior commands,
+it may be less useful for you.  However it is great for one-node-at-time basic configuration management use cases.
+
+Example::
+
+    ansible-playbook foo.yml --check
+
+Showing Differences with --diff
+```````````````````````````````
+
+.. versionadded:: 1.1
+
+The --diff option to ansible-playbook works great with --check (detailed above) but can also be used by itself.  When this flag is supplied, if any templated files on the remote system are changed, and the ansible-playbook CLI will report back
+the textual changes made to the file (or, if used with --check, the changes that would have been made).  Since the diff
+feature produces a large amount of output, it is best used when checking a single host at a time, like so::
+
+    ansible-playbook foo.yml --check --diff --limit foo.example.com
+
+Passing Complex Arguments From Dictionaries
+```````````````````````````````````````````
+
+As a review, most tasks in ansbile are of this form::
+
+    tasks:
+
+      - name: ensure the cobbler package is installed
+        yum: name=cobbler state=installed
+
+However, in some cases, it may be useful to feed arguments directly in from a hash (dictionary).  In fact, a very small
+number of modules (the CloudFormations module is one) actually require complex arguments that can't be fit
+into a key=value system.  To pass arguments in from a hash (dictionary), do this::
+
+    tasks:
+
+      - name: call a module that requires some complex arguments
+        module_name_goes_here: asdf=1234
+        args:
+           fibonacci_list:
+             - 1
+             - 1
+             - 2
+             - 3
+           my_pets:
+             dogs:
+               - fido
+               - woof
+             fish:
+               - limpet
+               - nemo
+
+While complex arguments can be fed to most modules in Ansible, they should only be used where needed.  Note
+that variable interpolation works exactly as you would suspect, so you can use "${foo}" and so on in values
+inside of the dictionary you pass to "args".
+
+If both key=value arguments are given along with 'args', the key=value arguments take priority.  This technically
+means you can set defaults by using 'args' if you so choose, though that is not the intended purpose of this
+feature.
+
+Advanced Task Includes
+``````````````````````
+
+In above sections we talked about task includes, and how to do loops using with_items.  If we wish
+to externalize data from the playbook rules itself, this is possible by combining some concepts.
+
+This is not something everyone may need to do at first, but it's a clever trick and deserves explanation.
+Here is a top level example playbook that loads variables from an external file and also tasks from an
+external file.  You will note that we use a list (using with_items) as a parameter on the include
+statement::
+
+    ---
+    # file: playbook-demo.yml
+
+    hosts: all
+    vars_files:
+       - config/users.yml
+    tasks:
+      - include: tasks/user.yml user=$item
+        with_items: $users
+
+We've defined our user definitions in an external file.  This allows us to reference that list of users in
+multiple playbooks.  The users list also defines users as a list of hashes, rather than just the usernames.
+We are also loading the SSH public keys for those users from the filesystem, though we could choose to embed
+them in the file instead.  It's up to you::
+
+    ----
+    # file: config/users.yml
+
+    users:
+      - name: alice
+        password: cryptedPasswordHere
+        sshkey: $FILE(/home/alice/id_rsa.pub)
+
+      - name: bob
+        password: cryptedPasswordHere
+        sshkey: $FILE(/home/bob/id_rsa.pub)
+
+Now that we have these two things together, we can write a task include file the playbook can use that sets
+up *all* of the users, rather than mentioning each user by name, or going to lots of trouble to correlate
+the user names with the SSH keys, and so on::
+
+    ---
+    # file: tasks/user.yml
+
+    - name: ensure user ${user.username} exists
+      action: user state=present name=${user.username} password=${user.password}
+
+    - name: install authorized keys for ${user.username}
+      action: authorized_key state=present user=${user.username} key="${user.sshkey}"
+
+If you can follow this example, you've done pretty well!  It combines most of the language features
+of example all together.  As you can see, there are lots of different ways to load data from
+sources, and to organize things.  Ansible does not really make you pick one or the other, so choose
+an approach that works best for you.
 
 Style Points
 ````````````

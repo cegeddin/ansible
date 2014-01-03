@@ -20,6 +20,7 @@
 
 import array
 import fcntl
+import fnmatch
 import glob
 import platform
 import re
@@ -30,14 +31,20 @@ DOCUMENTATION = '''
 ---
 module: setup
 short_description: Gathers facts about remote hosts
-options: {}
-description: 
+options:
+    filter:
+        version_added: 1.1
+        description:
+            - if supplied, only return facts that match this shell-style (fnmatch) wildcard.
+        required: false
+        default: '*'
+description:
      - This module is automatically called by playbooks to gather useful
        variables about remote hosts that can be used in playbooks. It can also be
        executed directly by C(/usr/bin/ansible) to check what variables are
        available to a host. Ansible provides many I(facts) about the system,
        automatically.
-notes: 
+notes:
     - More ansible facts will be added with successive releases. If I(facter) or
       I(ohai) are installed, variables from these programs will also be snapshotted
       into the JSON file for usage in templating. These variables are prefixed
@@ -45,11 +52,23 @@ notes:
       bubbled up to the caller. Using the ansible facts and choosing to not
       install I(facter) and I(ohai) means you can avoid Ruby-dependencies on your
       remote systems. (See also M(facter) and M(ohai).)
-examples:
-    - code: ansible all -m setup --tree /tmp/facts
-      description: Obtain facts from all hosts and store them indexed by I(hostname) at C(/tmp/facts).
+    - The filter option filters only the first level subkey below ansible_facts.
 author: Michael DeHaan
 '''
+
+EXAMPLES = """
+# Display facts from all hosts and store them indexed by I(hostname) at C(/tmp/facts).
+ansible all -m setup --tree /tmp/facts
+
+# Display only facts regarding memory found by ansible on all hosts and output them.
+ansible all -m setup -a 'filter=ansible_*_mb'
+
+# Display only facts returned by facter.
+ansible all -m setup -a 'filter=facter_*'
+
+# Display only facts returned by facter.
+ansible all -m setup -a 'filter=ansible_eth[0-2]'
+"""
 
 try:
     import selinux
@@ -76,7 +95,8 @@ class Facts(object):
     # For the most part, we assume that platform.dist() will tell the truth.
     # This is the fallback to handle unknowns or exceptions
     OSDIST_DICT = { '/etc/redhat-release': 'RedHat',
-                    '/etc/vmware-release': 'VMwareESX' }
+                    '/etc/vmware-release': 'VMwareESX',
+                    '/etc/system-release': 'OtherLinux' }
     SELINUX_MODE_DICT = { 1: 'enforcing', 0: 'permissive', -1: 'disabled' }
 
     # A list of dicts.  If there is a platform with more than one
@@ -85,7 +105,7 @@ class Facts(object):
     PKG_MGRS = [ { 'path' : '/usr/bin/yum',         'name' : 'yum' },
                  { 'path' : '/usr/bin/apt-get',     'name' : 'apt' },
                  { 'path' : '/usr/bin/zypper',      'name' : 'zypper' },
-                 { 'path' : '/usr/bin/pacman',      'name' : 'pacman' }, 
+                 { 'path' : '/usr/bin/pacman',      'name' : 'pacman' },
                  { 'path' : '/opt/local/bin/pkgin', 'name' : 'pkgin' } ]
 
     def __init__(self):
@@ -119,27 +139,61 @@ class Facts(object):
             self.facts['architecture'] = self.facts['machine']
         if self.facts['system'] == 'Linux':
             self.get_distribution_facts()
+        elif self.facts['system'] == 'AIX':
+            rc, out, err = module.run_command("/usr/sbin/bootinfo -p")
+            data = out.split('\n')
+            self.facts['architecture'] = data[0]
+
 
     # platform.dist() is deprecated in 2.6
     # in 2.6 and newer, you should use platform.linux_distribution()
     def get_distribution_facts(self):
-        dist = platform.dist()
-        self.facts['distribution'] = dist[0].capitalize() or 'NA'
-        self.facts['distribution_version'] = dist[1] or 'NA'
-        self.facts['distribution_release'] = dist[2] or 'NA'
-        # Try to handle the exceptions now ...
-        for (path, name) in Facts.OSDIST_DICT.items():
-            if os.path.exists(path):
-                if self.facts['distribution'] == 'Fedora':
-                    pass
-                elif name == 'RedHat':
-                    data = get_file_content(path)
-                    if 'Red Hat' in data:
-                        self.facts['distribution'] = name
+
+        # A list with OS Family members
+        OS_FAMILY = dict(
+            RedHat = 'RedHat', Fedora = 'RedHat', CentOS = 'RedHat', Scientific = 'RedHat',
+            SLC = 'RedHat', Ascendos = 'RedHat', CloudLinux = 'RedHat', PSBM = 'RedHat',
+            OracleLinux = 'RedHat', OVS = 'RedHat', OEL = 'RedHat', Amazon = 'RedHat',
+            XenServer = 'RedHat', Ubuntu = 'Debian', Debian = 'Debian', SLES = 'Suse',
+            SLED = 'Suse', OpenSuSE = 'Suse', SuSE = 'Suse', Gentoo = 'Gentoo',
+            Archlinux = 'Archlinux', Mandriva = 'Mandrake', Mandrake = 'Mandrake',
+            Solaris = 'Solaris', Nexenta = 'Solaris', OmniOS = 'Solaris', OpenIndiana = 'Solaris',
+            SmartOS = 'Solaris', AIX = 'AIX'
+        )
+
+        if self.facts['system'] == 'AIX':
+            self.facts['distribution'] = 'AIX'
+            rc, out, err = module.run_command("/usr/bin/oslevel")
+            data = out.split('.')
+            self.facts['distribution_version'] = data[0]
+            self.facts['distribution_release'] = data[1]
+        else:
+            dist = platform.dist()
+            self.facts['distribution'] = dist[0].capitalize() or 'NA'
+            self.facts['distribution_version'] = dist[1] or 'NA'
+            self.facts['distribution_release'] = dist[2] or 'NA'
+            # Try to handle the exceptions now ...
+            for (path, name) in Facts.OSDIST_DICT.items():
+                if os.path.exists(path):
+                    if self.facts['distribution'] == 'Fedora':
+                        pass
+                    elif name == 'RedHat':
+                        data = get_file_content(path)
+                        if 'Red Hat' in data:
+                            self.facts['distribution'] = name
+                        else:
+                            self.facts['distribution'] = data.split()[0]
+                    elif name == 'OtherLinux':
+                        data = get_file_content(path)
+                        if 'Amazon' in data:
+                            self.facts['distribution'] = 'Amazon'
+                            self.facts['distribution_version'] = data.split()[-1]
                     else:
-                        self.facts['distribution'] = data.split()[0]
-                else:
-                    self.facts['distribution'] = name
+                        self.facts['distribution'] = name
+
+        self.facts['os_family'] = self.facts['distribution']
+        if self.facts['distribution'] in OS_FAMILY:
+           self.facts['os_family'] = OS_FAMILY[self.facts['distribution']]
 
     def get_cmdline(self):
         data = get_file_content('/proc/cmdline')
@@ -276,7 +330,7 @@ class LinuxHardware(Hardware):
     - processor_cores
     - processor_count
 
-    In addition, it also defines number of DMI facts.
+    In addition, it also defines number of DMI facts and device facts.
     """
 
     platform = 'Linux'
@@ -309,6 +363,8 @@ class LinuxHardware(Hardware):
         self.get_cpu_facts()
         self.get_memory_facts()
         self.get_dmi_facts()
+        self.get_device_facts()
+        self.get_mount_facts()
         return self.facts
 
     def get_memory_facts(self):
@@ -365,6 +421,108 @@ class LinuxHardware(Hardware):
             else:
                 self.facts[key] = 'NA'
 
+    def get_mount_facts(self):
+        self.facts['mounts'] = []
+        mtab = get_file_content('/etc/mtab', '')
+        for line in mtab.split('\n'):
+            if line.startswith('/'):
+                fields = line.rstrip('\n').split()
+                self.facts['mounts'].append({'mount': fields[1], 'device':fields[0], 'fstype': fields[2], 'options': fields[3]})
+
+    def get_device_facts(self):
+        self.facts['devices'] = {}
+        lspci = module.get_bin_path('lspci')
+        if lspci:
+            rc, pcidata, err = module.run_command(lspci)
+        else:
+            pcidata = None
+
+        try:
+            block_devs = os.listdir("/sys/block")
+        except OSError:
+            return
+
+        for block in block_devs:
+            virtual = 1
+            sysfs_no_links = 0
+            try:
+                path = os.readlink(os.path.join("/sys/block/", block))
+            except OSError, e:
+                if e.errno == errno.EINVAL:
+                    path = block
+                    sysfs_no_links = 1
+                else:
+                    continue
+            if "virtual" in path:
+                continue
+            sysdir = os.path.join("/sys/block", path)
+            if sysfs_no_links == 1:
+                for folder in os.listdir(sysdir):
+                    if "device" in folder:
+                        virtual = 0
+                        break
+                if virtual:
+                    continue
+            d = {}
+            diskname = os.path.basename(sysdir)
+            for key in ['vendor', 'model']:
+                d[key] = get_file_content(sysdir + "/device/" + key)
+
+            for key,test in [ ('removable','/removable'), \
+                              ('support_discard','/queue/discard_granularity'),
+                              ]:
+                d[key] = get_file_content(sysdir + test)
+
+            d['partitions'] = {}
+            for folder in os.listdir(sysdir):
+                m = re.search("(" + diskname + "\d+)", folder)
+                if m:
+                    part = {}
+                    partname = m.group(1)
+                    part_sysdir = sysdir + "/" + partname
+
+                    part['start'] = get_file_content(part_sysdir + "/start",0)
+                    part['sectors'] = get_file_content(part_sysdir + "/size",0)
+                    part['sectorsize'] = get_file_content(part_sysdir + "/queue/hw_sector_size",512)
+                    part['size'] = module.pretty_bytes((float(part['sectors']) * float(part['sectorsize'])))
+                    d['partitions'][partname] = part
+
+            d['rotational'] = get_file_content(sysdir + "/queue/rotational")
+            d['scheduler_mode'] = ""
+            scheduler = get_file_content(sysdir + "/queue/scheduler")
+            m = re.match(".*?(\[(.*)\])", scheduler)
+            if m:
+                d['scheduler_mode'] = m.group(2)
+
+            d['sectors'] = get_file_content(sysdir + "/size")
+            if not d['sectors']:
+                d['sectors'] = 0
+            d['sectorsize'] = get_file_content(sysdir + "/queue/hw_sector_size")
+            if not d['sectorsize']:
+                d['sectorsize'] = 512
+            d['size'] = module.pretty_bytes(float(d['sectors']) * float(d['sectorsize']))
+
+            d['host'] = ""
+            m = re.match(".+/[a-f0-9]+:([a-f0-9]+:[a-f0-9]+\.[a-f0-9]+)/host\d+/", sysdir)
+            if m and pcidata:
+                pciid = m.group(1)
+                did = re.escape(pciid)
+                m = re.search("^" + did + "\s(.*)$", pcidata, re.MULTILINE)
+                d['host'] = m.group(1)
+
+            d['holders'] = []
+            for folder in os.listdir(sysdir + "/holders"):
+                if not folder.startswith("dm-"):
+                    continue
+                name = get_file_content(sysdir + "/holders/" + folder + "/dm/name")
+                if name:
+                    d['holders'].append(name)
+                else:
+                    d['holders'].append(folder)
+
+            self.facts['devices'][diskname] = d
+
+
 class SunOSHardware(Hardware):
     """
     In addition to the generic memory and cpu facts, this also sets
@@ -416,6 +574,7 @@ class FreeBSDHardware(Hardware):
     - processor (a list)
     - processor_cores
     - processor_count
+    - devices
     """
     platform = 'FreeBSD'
     DMESG_BOOT = '/var/run/dmesg.boot'
@@ -426,6 +585,8 @@ class FreeBSDHardware(Hardware):
     def populate(self):
         self.get_cpu_facts()
         self.get_memory_facts()
+        self.get_device_facts()
+        self.get_mount_facts()
         return self.facts
 
     def get_cpu_facts(self):
@@ -433,13 +594,10 @@ class FreeBSDHardware(Hardware):
         rc, out, err = module.run_command("/sbin/sysctl -n hw.ncpu")
         self.facts['processor_count'] = out.strip()
 
-        try:
-            dmesg_boot = open(FreeBSDHardware.DMESG_BOOT)
-        except IOError:
-            rc, out, err = module.run_command("/sbin/dmesg")
-            dmesg_boot = out
-
-        for line in dmesg_boot.readlines():
+        dmesg_boot = get_file_content(FreeBSDHardware.DMESG_BOOT)
+        if not dmesg_boot:
+            rc, dmesg_boot, err = module.run_command("/sbin/dmesg")
+        for line in dmesg_boot.split('\n'):
             if 'CPU:' in line:
                 cpu = re.sub(r'CPU:\s+', r"", line)
                 self.facts['processor'].append(cpu.strip())
@@ -470,6 +628,97 @@ class FreeBSDHardware(Hardware):
         data = lines[-1].split()
         self.facts['swaptotal_mb'] = data[1]
         self.facts['swapfree_mb'] = data[3]
+
+    def get_mount_facts(self):
+        self.facts['mounts'] = []
+        fstab = get_file_content('/etc/fstab')
+        if fstab:
+            for line in fstab.split('\n'):
+                if line.startswith('#') or line.strip() == '':
+                    continue
+                fields = re.sub(r'\s+',' ',line.rstrip('\n')).split()
+                self.facts['mounts'].append({'mount': fields[1] , 'device': fields[0], 'fstype' : fields[2], 'options': fields[3]})
+
+    def get_device_facts(self):
+        sysdir = '/dev'
+        self.facts['devices'] = {}
+        drives = re.compile('(ada?\d+|da\d+|a?cd\d+)') #TODO: rc, disks, err = module.run_command("/sbin/sysctl kern.disks")
+        slices = re.compile('(ada?\d+s\d+\w*|da\d+s\d+\w*)')
+        if os.path.isdir(sysdir):
+            dirlist = sorted(os.listdir(sysdir))
+            for device in dirlist:
+                d = drives.match(device)
+                if d:
+                    self.facts['devices'][d.group(1)] = []
+                s = slices.match(device)
+                if s:
+                    self.facts['devices'][d.group(1)].append(s.group(1))
+
+class AIX(Hardware):
+    """
+    AIX-specific subclass of Hardware.  Defines memory and CPU facts:
+    - memfree_mb
+    - memtotal_mb
+    - swapfree_mb
+    - swaptotal_mb
+    - processor (a list)
+    - processor_cores
+    - processor_count
+    """
+    platform = 'AIX'
+
+    def __init__(self):
+        Hardware.__init__(self)
+
+    def populate(self):
+        self.get_cpu_facts()
+        self.get_memory_facts()
+        self.get_dmi_facts()
+        return self.facts
+
+    def get_cpu_facts(self):
+        self.facts['processor'] = []
+        rc, out, err = module.run_command("/usr/sbin/lsattr -El proc0 -a type")
+        data = out.split(' ')
+        self.facts['processor'] = data[1]
+        rc, out, err = module.run_command("/usr/sbin/lsattr -El proc0 -a smt_threads")
+        data = out.split(' ')
+        self.facts['processor_cores'] = int(data[1])
+        rc, out, err = module.run_command("/usr/sbin/lsdev -Cc processor")
+        i = 0
+        for line in out.split('\n'):
+            data = line.split(':')
+            if 'Available' in line:
+                i += 1
+        self.facts['processor_count'] = int(i)
+
+    def get_memory_facts(self):
+        pagesize = 4096
+        rc, out, err = module.run_command("/usr/bin/vmstat -v")
+        for line in out.split('\n'):
+            data = line.split()
+            if 'memory pages' in line:
+                pagecount = long(data[0])
+            if 'free pages' in line:
+                freecount = long(data[0])
+        self.facts['memtotal_mb'] = pagesize * pagecount / 1024 / 1024
+        self.facts['memfree_mb'] = pagesize * freecount / 1024 / 1024
+        # Get swapinfo.  swapinfo output looks like:
+        # Device          1M-blocks     Used    Avail Capacity
+        # /dev/ada0p3        314368        0   314368     0%
+        #
+        rc, out, err = module.run_command("/usr/sbin/lsps -s")
+        lines = out.split('\n')
+        data = lines[1].split()
+        swaptotal_mb = long(data[0].rstrip('MB'))
+        percused = int(data[1].rstrip('%'))
+        self.facts['swaptotal_mb'] = swaptotal_mb
+        self.facts['swapfree_mb'] = long(swaptotal_mb * ( 100 - percused ) / 100)
+
+    def get_dmi_facts(self):
+        rc, out, err = module.run_command("/usr/sbin/lsattr -El sys0 -a fwversion")
+        data = out.split()
+        self.facts['firmware_version'] = data[1].strip('IBM,')
 
 class Network(Facts):
     """
@@ -546,7 +795,7 @@ class LinuxNetwork(Network):
                 continue
             rc, out, err = module.run_command(command[v])
             if not out:
-                # v6 routing may result in 
+                # v6 routing may result in
                 #   RTNETLINK answers: Invalid argument
                 continue
             words = out.split('\n')[0].split()
@@ -707,7 +956,7 @@ class LinuxVirtual(Virtual):
             except IOError:
                 pass
             return
- 
+
         if os.path.exists('/proc/vz'):
             self.facts['virtualization_type'] = 'openvz'
             if os.path.exists('/proc/bc'):
@@ -753,30 +1002,32 @@ class LinuxVirtual(Virtual):
             self.facts['virtualization_role'] = 'guest'
             return
 
-        for line in open('/proc/self/status').readlines():
-            if re.match('^VxID: \d+', line):
-                self.facts['virtualization_type'] = 'linux_vserver'
-                if re.match('^VxID: 0', line):
-                    self.facts['virtualization_role'] = 'host'
-                else:
-                    self.facts['virtualization_role'] = 'guest'
-                return
+        if os.path.exists('/proc/self/status'):
+            for line in open('/proc/self/status').readlines():
+                if re.match('^VxID: \d+', line):
+                    self.facts['virtualization_type'] = 'linux_vserver'
+                    if re.match('^VxID: 0', line):
+                        self.facts['virtualization_role'] = 'host'
+                    else:
+                        self.facts['virtualization_role'] = 'guest'
+                    return
 
-        for line in open('/proc/cpuinfo').readlines():
-            if re.match('^model name.*QEMU Virtual CPU', line):
-                self.facts['virtualization_type'] = 'kvm'
-            elif re.match('^vendor_id.*User Mode Linux', line):
-                self.facts['virtualization_type'] = 'uml'
-            elif re.match('^model name.*UML', line):
-                self.facts['virtualization_type'] = 'uml'
-            elif re.match('^vendor_id.*PowerVM Lx86', line):
-                self.facts['virtualization_type'] = 'powervm_lx86'
-            elif re.match('^vendor_id.*IBM/S390', line):
-                self.facts['virtualization_type'] = 'ibm_systemz'
-            else:
-                continue
-            self.facts['virtualization_role'] = 'guest'
-            return
+        if os.path.exists('/proc/cpuinfo'):
+            for line in open('/proc/cpuinfo').readlines():
+                if re.match('^model name.*QEMU Virtual CPU', line):
+                    self.facts['virtualization_type'] = 'kvm'
+                elif re.match('^vendor_id.*User Mode Linux', line):
+                    self.facts['virtualization_type'] = 'uml'
+                elif re.match('^model name.*UML', line):
+                    self.facts['virtualization_type'] = 'uml'
+                elif re.match('^vendor_id.*PowerVM Lx86', line):
+                    self.facts['virtualization_type'] = 'powervm_lx86'
+                elif re.match('^vendor_id.*IBM/S390', line):
+                    self.facts['virtualization_type'] = 'ibm_systemz'
+                else:
+                    continue
+                self.facts['virtualization_role'] = 'guest'
+                return
 
         # Beware that we can have both kvm and virtualbox running on a single system
         if os.path.exists("/proc/modules"):
@@ -846,12 +1097,12 @@ class SunOSVirtual(Virtual):
                     self.facts['virtualization_type'] = 'virtualbox'
                     self.facts['virtualization_role'] = 'guest'
 
-def get_file_content(path):
-    data = None
+def get_file_content(path, default=None):
+    data = default
     if os.path.exists(path) and os.access(path, os.R_OK):
         data = open(path).read().strip()
         if len(data) == 0:
-            data = None
+            data = default
     return data
 
 def ansible_facts():
@@ -903,8 +1154,11 @@ def run_setup(module):
                     k2 = "ohai_%s" % k.replace('-', '_')
                     setup_options[k2] = v
 
-    setup_result = {}
-    setup_result['ansible_facts'] = setup_options
+    setup_result = { 'ansible_facts': {} }
+
+    for (k,v) in setup_options.items():
+        if module.params['filter'] == '*' or fnmatch.fnmatch(k, module.params['filter']):
+            setup_result['ansible_facts'][k] = v
 
     # hack to keep --verbose from showing all the setup module results
     setup_result['verbose_override'] = True
@@ -914,7 +1168,10 @@ def run_setup(module):
 def main():
     global module
     module = AnsibleModule(
-        argument_spec = dict()
+        argument_spec = dict(
+            filter=dict(default="*", required=False),
+        ),
+        supports_check_mode = True,
     )
     data = run_setup(module)
     module.exit_json(**data)

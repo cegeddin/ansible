@@ -28,7 +28,12 @@ class ActionModule(object):
     def __init__(self, runner):
         self.runner = runner
 
-    def run(self, conn, tmp, module_name, module_args, inject):
+    def run(self, conn, tmp, module_name, module_args, inject, complex_args=None, **kwargs):
+
+        if self.runner.check:
+            # in --check mode, always skip this module execution
+            return ReturnData(conn=conn, comm_ok=True, result=dict(skipped=True))
+
         executable = ''
         # From library/command, keep in sync
         r = re.compile(r'(^|\s)(executable)=(?P<quote>[\'"])?(.*?)(?(quote)(?<!\\)(?P=quote))((?<!\\)\s|$)')

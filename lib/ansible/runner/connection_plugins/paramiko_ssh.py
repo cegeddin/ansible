@@ -43,18 +43,18 @@ SFTP_CONNECTION_CACHE = {}
 class Connection(object):
     ''' SSH based connections with Paramiko '''
 
-    def __init__(self, runner, host, port=None):
+    def __init__(self, runner, host, port, user, password):
 
         self.ssh = None
         self.sftp = None
         self.runner = runner
         self.host = host
         self.port = port
-        if port is None:
-            self.port = self.runner.remote_port
+        self.user = user
+        self.password = password
 
     def _cache_key(self):
-        return "%s__%s__" % (self.host, self.runner.remote_user)
+        return "%s__%s__" % (self.host, self.user)
 
     def connect(self):
         cache_key = self._cache_key()
@@ -70,23 +70,21 @@ class Connection(object):
         if not HAVE_PARAMIKO:
             raise errors.AnsibleError("paramiko is not installed")
 
-        user = self.runner.remote_user
-
-        vvv("ESTABLISH CONNECTION FOR USER: %s on PORT %s TO %s" % (user, self.port, self.host), host=self.host)
+        vvv("ESTABLISH CONNECTION FOR USER: %s on PORT %s TO %s" % (self.user, self.port, self.host), host=self.host)
 
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         allow_agent = True
-        if self.runner.remote_pass is not None:
+        if self.password is not None:
             allow_agent = False
         try:
             if self.runner.private_key_file:
                 key_filename = os.path.expanduser(self.runner.private_key_file)
             else:
                 key_filename = None
-            ssh.connect(self.host, username=user, allow_agent=allow_agent, look_for_keys=True,
-                key_filename=key_filename, password=self.runner.remote_pass,
+            ssh.connect(self.host, username=self.user, allow_agent=allow_agent, look_for_keys=True,
+                key_filename=key_filename, password=self.password,
                 timeout=self.runner.timeout, port=self.port)
         except Exception, e:
             msg = str(e)
@@ -94,7 +92,7 @@ class Connection(object):
                 raise errors.AnsibleError("paramiko version issue, please upgrade paramiko on the machine running ansible")
             elif "Private key file is encrypted" in msg:
                 msg = 'ssh %s@%s:%s : %s\nTo connect as a different user, use -u <username>.' % (
-                    user, self.host, self.port, msg)
+                    self.user, self.host, self.port, msg)
                 raise errors.AnsibleConnectionFailed(msg)
             else:
                 raise errors.AnsibleConnectionFailed(msg)
@@ -112,7 +110,6 @@ class Connection(object):
             if len(str(e)) > 0:
                 msg += ": %s" % str(e)
             raise errors.AnsibleConnectionFailed(msg)
-        chan.get_pty()
 
         if not self.runner.sudo or not sudoable:
             if executable:
@@ -122,6 +119,12 @@ class Connection(object):
             vvv("EXEC %s" % quoted_command, host=self.host)
             chan.exec_command(quoted_command)
         else:
+            # sudo usually requires a PTY (cf. requiretty option), therefore
+            # we give it one, and we try to initialise from the calling
+            # environment
+            chan.get_pty(term=os.getenv('TERM', 'vt100'),
+                         width=int(os.getenv('COLUMNS', 0)),
+                         height=int(os.getenv('LINES', 0)))
             shcmd, prompt = utils.make_sudo_cmd(sudo_user, executable, cmd)
             vvv("EXEC %s" % shcmd, host=self.host)
             sudo_output = ''
@@ -161,7 +164,7 @@ class Connection(object):
             raise errors.AnsibleError("failed to transfer file to %s" % out_path)
 
     def _connect_sftp(self):
-        cache_key = "%s__%s__" % (self.host, self.runner.remote_user)
+        cache_key = "%s__%s__" % (self.host, self.user)
         if cache_key in SFTP_CONNECTION_CACHE:
             return SFTP_CONNECTION_CACHE[cache_key]
         else:

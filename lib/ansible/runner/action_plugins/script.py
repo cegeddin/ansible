@@ -28,8 +28,12 @@ class ActionModule(object):
     def __init__(self, runner):
         self.runner = runner
 
-    def run(self, conn, tmp, module_name, module_args, inject):
+    def run(self, conn, tmp, module_name, module_args, inject, complex_args=None, **kwargs):
         ''' handler for file transfer operations '''
+
+        if self.runner.check:
+            # in check mode, always skip this module
+            return ReturnData(conn=conn, comm_ok=True, result=dict(skipped=True, msg='check mode not supported for this module'))
 
         tokens  = shlex.split(module_args)
         source  = tokens[0]
